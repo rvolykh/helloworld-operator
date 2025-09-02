@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- helloworld_v1_copytopod.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
