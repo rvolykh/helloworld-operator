@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -80,6 +82,9 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 
+	err = prepareKubeconfig(cfg)
+	Expect(err).NotTo(HaveOccurred())
+
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
@@ -113,4 +118,34 @@ func getFirstFoundEnvTestBinaryDir() string {
 		}
 	}
 	return ""
+}
+
+func prepareKubeconfig(cfg *rest.Config) error {
+	content := fmt.Sprintf(`
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: %s
+  name: envtests
+contexts:
+- context:
+    cluster: envtests
+    user: envtests
+  name: envtests
+current-context: envtests
+kind: Config
+users:
+- name: envtests
+  user:
+    client-certificate-data: %s
+    client-key-data: %s
+`, base64.StdEncoding.EncodeToString(cfg.CAData), cfg.Host, base64.StdEncoding.EncodeToString(cfg.CertData), base64.StdEncoding.EncodeToString(cfg.KeyData))
+
+	err := os.WriteFile("/tmp/test.kubeconf", []byte(content), 0644)
+	if err != nil {
+		return err
+	}
+
+	return os.Setenv("KUBECONFIG", "/tmp/test.kubeconf")
 }

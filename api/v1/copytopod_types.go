@@ -30,9 +30,14 @@ type CopyToPodSpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// foo is an example field of CopyToPod. Edit copytopod_types.go to remove/update
+	PodName string `json:"podName"`
+
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	ContainerName string `json:"containerName,omitempty"`
+
+	FileName string `json:"filename"`
+
+	Content string `json:"content"`
 }
 
 // CopyToPodStatus defines the observed state of CopyToPod.

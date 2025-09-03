@@ -6,4 +6,12 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: copytopod-sample
 spec:
-  # TODO(user): Add fields here
+  podName: nginx-pod-sample
+  containerName: null
+  filename: "/usr/share/nginx/html/index.html"
+  content: |
+    <hmtl>
+      <body>
+        <h1>Hello World</h1>
+      </body>
+    </html>

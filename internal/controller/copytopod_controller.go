@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,11 +32,14 @@ import (
 type CopyToPodReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	PodCopyCmd PodCopyCmd
 }
 
 // +kubebuilder:rbac:groups=helloworld.rvolykh.github.com,resources=copytopods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=helloworld.rvolykh.github.com,resources=copytopods/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=helloworld.rvolykh.github.com,resources=copytopods/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=pod,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -47,10 +51,25 @@ type CopyToPodReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *CopyToPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	logger := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	obj := &helloworldv1.CopyToPod{}
+	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
+		logger.Error(err, "Failure")
+		return ctrl.Result{}, err
+	}
 
+	logger = logger.WithValues("podName", obj.Spec.PodName, "fileName", obj.Spec.FileName)
+
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
+	if err := r.PodCopyCmd.CopyTo(ctx, *obj); err != nil {
+		logger.Error(err, "Failure")
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("Success")
 	return ctrl.Result{}, nil
 }
 

@@ -37,6 +37,7 @@ import (
 
 	helloworldv1 "github.com/rvolykh/helloworld-operator/api/v1"
 	"github.com/rvolykh/helloworld-operator/internal/controller"
+	helloworldsdk "github.com/rvolykh/helloworld-operator/internal/sdk"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -178,9 +179,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	options := helloworldsdk.PodClientOptions{}
+	podClient, err := helloworldsdk.NewPodClient(options)
+	if err != nil {
+		setupLog.Error(err, "unable to create PodClient")
+		os.Exit(1)
+	}
+
 	if err := (&controller.CopyToPodReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		PodCopyCmd: podClient,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CopyToPod")
 		os.Exit(1)
