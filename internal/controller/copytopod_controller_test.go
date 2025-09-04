@@ -70,6 +70,12 @@ var _ = Describe("CopyToPod Controller", func() {
 			err := k8sClient.Get(ctx, resourceTypeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
+			By("Removing finalizers")
+			Eventually(func() error {
+				resource.SetFinalizers(nil)
+				return k8sClient.Update(ctx, resource)
+			}).Should(Succeed())
+
 			By("Cleanup the specific resource instance CopyToPod")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
@@ -91,11 +97,12 @@ var _ = Describe("CopyToPod Controller", func() {
 		It("should fail to reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &CopyToPodReconciler{
-				Client:     k8sClient,
-				Scheme:     k8sClient.Scheme(),
-				PodCopyCmd: &fake.FakePodCopyCmd{Err: errors.NewResourceExpired("Expected")},
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				PodCopyCmd: &fake.FakePodCopyCmd{
+					Err: errors.NewTooManyRequestsError("Expected"),
+				},
 			}
-
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: resourceTypeNamespacedName,
 			})

@@ -20,13 +20,17 @@ import (
 	"context"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	helloworldv1 "github.com/rvolykh/helloworld-operator/api/v1"
 )
+
+const copyToPodFinalizer = "copytopod.helloworld.rvolykh.github.com/finalizer"
 
 // CopyToPodReconciler reconciles a CopyToPod object
 type CopyToPodReconciler struct {
@@ -55,11 +59,40 @@ func (r *CopyToPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	obj := &helloworldv1.CopyToPod{}
 	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
 		logger.Error(err, "Failure")
 		return ctrl.Result{}, err
 	}
 
-	logger = logger.WithValues("podName", obj.Spec.PodName, "fileName", obj.Spec.FileName)
+	logger = logger.WithValues(
+		"podName", obj.Spec.PodName,
+		"fileName", obj.Spec.FileName,
+	)
+
+	if obj.DeletionTimestamp.IsZero() {
+		// The object is not being deleted, add the finalizer if it's not there
+		if !controllerutil.ContainsFinalizer(obj, copyToPodFinalizer) {
+			controllerutil.AddFinalizer(obj, copyToPodFinalizer)
+			if err := r.Update(ctx, obj); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		// The object is being deleted
+		if controllerutil.ContainsFinalizer(obj, copyToPodFinalizer) {
+			// place for additional cleanup logic if needed
+
+			// Remove the finalizer after cleanup
+			controllerutil.RemoveFinalizer(obj, copyToPodFinalizer)
+			if err := r.Update(ctx, obj); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		// Stop reconciliation as the object is being deleted and finalizer removed
+		return ctrl.Result{}, nil
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()

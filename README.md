@@ -1,8 +1,8 @@
 # helloworld-operator
-// TODO(user): Add simple overview of use/purpose
+K8s operator to playaround.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+The project is created in scope of self education on K8s operators topic.
 
 ## Getting Started
 
