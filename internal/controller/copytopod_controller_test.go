@@ -22,9 +22,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	helloworldv1 "github.com/rvolykh/helloworld-operator/api/v1"
@@ -33,7 +35,10 @@ import (
 
 var _ = Describe("CopyToPod Controller", func() {
 	Context("When reconciling a resource", func() {
-		const namespace = "default"
+		const (
+			namespace     = "default"
+			containerName = "test-nginx"
+		)
 		var (
 			ctx = context.Background()
 
@@ -41,43 +46,77 @@ var _ = Describe("CopyToPod Controller", func() {
 				Name:      "test-resource",
 				Namespace: namespace,
 			}
+			podTypeNamespacedName = types.NamespacedName{
+				Name:      "test-pod",
+				Namespace: namespace,
+			}
 
 			copytopod = &helloworldv1.CopyToPod{}
+			pod       = &corev1.Pod{}
 		)
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind CopyToPod")
-			err := k8sClient.Get(ctx, resourceTypeNamespacedName, copytopod)
+			By("creating the dummy resource for the Kind Pod")
+			err := k8sClient.Get(ctx, podTypeNamespacedName, pod)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &helloworldv1.CopyToPod{
+				pod = &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      podTypeNamespacedName.Name,
+						Namespace: podTypeNamespacedName.Namespace,
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  containerName,
+								Image: "nginx:latest",
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			}
+
+			By("creating the custom resource for the Kind CopyToPod")
+			err = k8sClient.Get(ctx, resourceTypeNamespacedName, copytopod)
+			if err != nil && errors.IsNotFound(err) {
+				copytopod = &helloworldv1.CopyToPod{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceTypeNamespacedName.Name,
 						Namespace: resourceTypeNamespacedName.Namespace,
 					},
 					Spec: helloworldv1.CopyToPodSpec{
-						PodName:       "test-nginx",
-						ContainerName: "test-nginx",
+						PodName:       podTypeNamespacedName.Name,
+						ContainerName: containerName,
 						FileName:      "/usr/share/nginx/html/index.html",
 						Content:       "Hello World",
 					},
 				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+				Expect(k8sClient.Create(ctx, copytopod)).To(Succeed())
 			}
 		})
 
 		AfterEach(func() {
-			resource := &helloworldv1.CopyToPod{}
-			err := k8sClient.Get(ctx, resourceTypeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+			if err := k8sClient.Get(ctx, podTypeNamespacedName, pod); err == nil {
+				By("Removing finalizers")
+				Eventually(func() error {
+					pod.SetFinalizers(nil)
+					return k8sClient.Update(ctx, pod)
+				}).Should(Succeed())
 
-			By("Removing finalizers")
-			Eventually(func() error {
-				resource.SetFinalizers(nil)
-				return k8sClient.Update(ctx, resource)
-			}).Should(Succeed())
+				By("Cleanup the specific resource instance Pod")
+				Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+			}
 
-			By("Cleanup the specific resource instance CopyToPod")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			if err := k8sClient.Get(ctx, resourceTypeNamespacedName, copytopod); err == nil {
+				By("Removing finalizers")
+				Eventually(func() error {
+					copytopod.SetFinalizers(nil)
+					return k8sClient.Update(ctx, copytopod)
+				}).Should(Succeed())
+
+				By("Cleanup the specific resource instance CopyToPod")
+				Expect(k8sClient.Delete(ctx, copytopod)).To(Succeed())
+			}
 		})
 
 		It("should successfully reconcile the resource", func() {
@@ -92,9 +131,23 @@ var _ = Describe("CopyToPod Controller", func() {
 				NamespacedName: resourceTypeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+
+			By("Checking that the resource has been reconciled")
+			Expect(k8sClient.Get(ctx, resourceTypeNamespacedName, copytopod)).To(Succeed())
+			cond := meta.FindStatusCondition(copytopod.Status.Conditions, "Available")
+			Expect(cond).NotTo(BeNil())
+			Expect(copytopod.Status.Conditions).To(HaveLen(1))
+			Expect(cond.Reason).To(Equal("Completed"))
+			Expect(cond.Message).To(Equal("File copied successfully"))
+
+			By("Checking that Pod as controlled by the CopyToPod resource")
+			Expect(k8sClient.Get(ctx, podTypeNamespacedName, pod)).To(Succeed())
+			refs := pod.GetOwnerReferences()
+			Expect(refs).To(HaveLen(1))
+			Expect(refs[0].UID).To(Equal(copytopod.GetUID()))
 		})
 
-		It("should fail to reconcile the resource", func() {
+		It("should re-attempt fail to reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &CopyToPodReconciler{
 				Client: k8sClient,
@@ -106,7 +159,76 @@ var _ = Describe("CopyToPod Controller", func() {
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: resourceTypeNamespacedName,
 			})
-			Expect(err).To(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Checking that the resource has been reconciled")
+			Expect(k8sClient.Get(ctx, resourceTypeNamespacedName, copytopod)).To(Succeed())
+			cond := meta.FindStatusCondition(copytopod.Status.Conditions, "Available")
+			Expect(cond).NotTo(BeNil())
+			Expect(copytopod.Status.Conditions).To(HaveLen(1))
+			Expect(cond.Reason).To(Equal("Reconciling"))
+			Expect(cond.Message).To(Equal("Too many requests: Expected"))
+
+			By("Checking that Pod is controlled by the CopyToPod resource")
+			Expect(k8sClient.Get(ctx, podTypeNamespacedName, pod)).To(Succeed())
+			refs := pod.GetOwnerReferences()
+			Expect(refs).To(HaveLen(1))
+			Expect(refs[0].UID).To(Equal(copytopod.GetUID()))
+		})
+
+		It("should handle Pod removal", func() {
+			By("Reconciling the created resource")
+			controllerReconciler := &CopyToPodReconciler{
+				Client:     k8sClient,
+				Scheme:     k8sClient.Scheme(),
+				PodCopyCmd: &fake.FakePodCopyCmd{},
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: resourceTypeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Deleting the Pod")
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+
+			By("Reconciling the deleted resource")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: resourceTypeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Checking that Pod has been deleted")
+			Expect(k8sClient.Get(ctx, podTypeNamespacedName, pod)).NotTo(Succeed())
+		})
+
+		It("should handle CopyToPod removal", func() {
+			By("Reconciling the created resource")
+			controllerReconciler := &CopyToPodReconciler{
+				Client:     k8sClient,
+				Scheme:     k8sClient.Scheme(),
+				PodCopyCmd: &fake.FakePodCopyCmd{},
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: resourceTypeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Deleting the Pod")
+			Expect(k8sClient.Delete(ctx, copytopod)).To(Succeed())
+
+			By("Reconciling the deleted resource")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: resourceTypeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Checking that CopyToPod has been deleted")
+			Expect(k8sClient.Get(ctx, resourceTypeNamespacedName, copytopod)).NotTo(Succeed())
+
+			By("Checking that Pod is not controlled by the CopyToPod resource")
+			Expect(k8sClient.Get(ctx, podTypeNamespacedName, pod)).To(Succeed())
+			refs := pod.GetOwnerReferences()
+			Expect(refs).To(BeEmpty())
 		})
 	})
 })
