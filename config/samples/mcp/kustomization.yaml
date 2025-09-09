@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- mcp_client.yaml
+- helloworld_v1_mcp.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

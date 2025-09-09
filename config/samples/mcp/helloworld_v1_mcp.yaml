@@ -1,0 +1,11 @@
+apiVersion: helloworld.rvolykh.github.com/v1
+kind: MCP
+metadata:
+  labels:
+    app.kubernetes.io/name: helloworld-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: mcp-sample
+spec:
+  type: internal
+  internal:
+    image: rvolykh/helloworld-mcp-math:v0.1.1

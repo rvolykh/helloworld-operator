@@ -14,9 +14,34 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - helloworld.rvolykh.github.com
   resources:
   - copytopods
+  - mcps
   verbs:
   - create
   - delete
@@ -29,12 +54,14 @@ rules:
   - helloworld.rvolykh.github.com
   resources:
   - copytopods/finalizers
+  - mcps/finalizers
   verbs:
   - update
 - apiGroups:
   - helloworld.rvolykh.github.com
   resources:
   - copytopods/status
+  - mcps/status
   verbs:
   - get
   - patch

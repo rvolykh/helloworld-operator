@@ -1,0 +1,30 @@
+# kubectl port-forward pod/mcp-client 6274:6274 6277:6277
+# http://localhost:6274/
+
+# - Transport Type: Streamable HTTP
+# - URL: http://mcp-sample:8080/
+#    Connect
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mcp-client
+  namespace: default
+  labels:
+    app: mcp-client
+spec:
+  containers:
+    - name: mcp-client
+      image: ghcr.io/modelcontextprotocol/inspector:latest
+      imagePullPolicy: IfNotPresent
+      ports:
+        - containerPort: 6274
+          name: client
+        - containerPort: 6277
+          name: server
+      env:
+        - name: MCP_AUTO_OPEN_ENABLED
+          value: "false"
+        - name: DANGEROUSLY_OMIT_AUTH
+          value: "true"
+  restartPolicy: Always
