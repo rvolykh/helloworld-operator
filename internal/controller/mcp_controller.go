@@ -96,7 +96,6 @@ func (r *MCPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			logger.Error(err, "Failed to handle MCP Service resource (externalName)")
 			return ctrl.Result{}, err
 		}
-		logger.Info("MCP Service resource (externalName) is handled")
 	case helloworldv1.Internal:
 		fallthrough
 	default:
@@ -104,13 +103,11 @@ func (r *MCPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			logger.Error(err, "Failed to handle MCP Deployment resource")
 			return ctrl.Result{}, err
 		}
-		logger.Info("MCP Deployment resource is handled")
 
 		if err := r.handleService(ctx, logger, cr); err != nil {
 			logger.Error(err, "Failed to handle MCP Service resource (clusterIP)")
 			return ctrl.Result{}, err
 		}
-		logger.Info("MCP Service resource (clusterIP) is handled")
 	}
 
 	logger.Info("MCP reconciliation completed")
@@ -126,7 +123,8 @@ func (r *MCPReconciler) handleDeployment(ctx context.Context, logger logr.Logger
 			Namespace: cr.Namespace,
 		}
 
-		deployment = &appsv1.Deployment{
+		haveDeployment = &appsv1.Deployment{}
+		wantDeployment = &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      cr.Name,
 				Namespace: cr.Namespace,
@@ -152,6 +150,7 @@ func (r *MCPReconciler) handleDeployment(ctx context.Context, logger logr.Logger
 								Ports: []corev1.ContainerPort{
 									{
 										ContainerPort: 8080,
+										Protocol:      corev1.ProtocolTCP,
 									},
 								},
 							},
@@ -160,11 +159,7 @@ func (r *MCPReconciler) handleDeployment(ctx context.Context, logger logr.Logger
 				},
 			},
 		}
-
-		expectedSpec appsv1.DeploymentSpec
 	)
-
-	expectedSpec = *deployment.Spec.DeepCopy()
 
 	// The MCP is being deleted
 	if !controllerutil.ContainsFinalizer(cr, mcpFinalizer) {
@@ -173,27 +168,38 @@ func (r *MCPReconciler) handleDeployment(ctx context.Context, logger logr.Logger
 		return nil
 	}
 
-	if err := r.Get(ctx, namespacedName, deployment); err != nil {
+	if err := r.Get(ctx, namespacedName, haveDeployment); err != nil {
 		if !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to get MCP Deployment resource: %w", err)
 		}
 
-		if err := controllerutil.SetControllerReference(cr, deployment, r.Scheme); err != nil {
+		if err := controllerutil.SetControllerReference(cr, wantDeployment, r.Scheme); err != nil {
 			return fmt.Errorf("failed to set controller reference: %w", err)
 		}
-		if err := r.Create(ctx, deployment); err != nil {
+		if err := r.Create(ctx, wantDeployment); err != nil {
 			return fmt.Errorf("failed to create MCP Deployment resource: %w", err)
 		}
+
+		logger.Info("MCP Deployment resource created")
+		return nil
 	}
 
-	if reflect.DeepEqual(expectedSpec, deployment.Spec) {
+	is_up_to_date := reflect.DeepEqual(wantDeployment.Labels, haveDeployment.Labels) &&
+		*wantDeployment.Spec.Replicas == *haveDeployment.Spec.Replicas &&
+		reflect.DeepEqual(wantDeployment.Spec.Selector, haveDeployment.Spec.Selector) &&
+		reflect.DeepEqual(wantDeployment.Spec.Template.Labels, haveDeployment.Spec.Template.Labels) &&
+		len(wantDeployment.Spec.Template.Spec.Containers) == len(haveDeployment.Spec.Template.Spec.Containers) &&
+		wantDeployment.Spec.Template.Spec.Containers[0].Name == haveDeployment.Spec.Template.Spec.Containers[0].Name &&
+		wantDeployment.Spec.Template.Spec.Containers[0].Image == haveDeployment.Spec.Template.Spec.Containers[0].Image &&
+		reflect.DeepEqual(wantDeployment.Spec.Template.Spec.Containers[0].Ports, haveDeployment.Spec.Template.Spec.Containers[0].Ports)
+
+	if is_up_to_date {
 		logger.Info("MCP Deployment resource is up to date")
 		return nil
 	}
 
 	// Update the deployment spec to match expected spec
-	deployment.Spec = expectedSpec
-	if err := r.Update(ctx, deployment); err != nil {
+	if err := r.Update(ctx, wantDeployment); err != nil {
 		return fmt.Errorf("failed to update MCP Deployment resource: %w", err)
 	}
 
@@ -210,23 +216,22 @@ func (r *MCPReconciler) handleService(ctx context.Context, logger logr.Logger, c
 			Namespace: cr.Namespace,
 		}
 
-		service = &corev1.Service{
+		haveService = &corev1.Service{}
+		wantService = &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      cr.Name,
 				Namespace: cr.Namespace,
 			},
 		}
-
-		expectedSpec corev1.ServiceSpec
 	)
 
 	if *cr.Spec.Type == helloworldv1.External {
-		service.Spec = corev1.ServiceSpec{
+		wantService.Spec = corev1.ServiceSpec{
 			Type:         corev1.ServiceTypeExternalName,
 			ExternalName: cr.Spec.External.URL,
 		}
 	} else {
-		service.Spec = corev1.ServiceSpec{
+		wantService.Spec = corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP,
 			Selector: map[string]string{
 				"app": cr.Name,
@@ -234,12 +239,12 @@ func (r *MCPReconciler) handleService(ctx context.Context, logger logr.Logger, c
 			Ports: []corev1.ServicePort{
 				{
 					Port:       8080,
+					Protocol:   corev1.ProtocolTCP,
 					TargetPort: intstr.FromInt(8080),
 				},
 			},
 		}
 	}
-	expectedSpec = *service.Spec.DeepCopy()
 
 	// The MCP is being deleted
 	if !controllerutil.ContainsFinalizer(cr, mcpFinalizer) {
@@ -248,31 +253,37 @@ func (r *MCPReconciler) handleService(ctx context.Context, logger logr.Logger, c
 		return nil
 	}
 
-	if err := r.Get(ctx, namespacedName, service); err != nil {
+	if err := r.Get(ctx, namespacedName, haveService); err != nil {
 		if !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to get MCP Service resource: %w", err)
 		}
 
-		if err := controllerutil.SetControllerReference(cr, service, r.Scheme); err != nil {
+		if err := controllerutil.SetControllerReference(cr, wantService, r.Scheme); err != nil {
 			return fmt.Errorf("failed to set controller reference: %w", err)
 		}
-		if err := r.Create(ctx, service); err != nil {
+		if err := r.Create(ctx, wantService); err != nil {
 			return fmt.Errorf("failed to create MCP Service resource: %w", err)
 		}
+
+		logger.Info("MCP Service resource created")
+		return nil
 	}
 
-	if reflect.DeepEqual(expectedSpec, service.Spec) {
+	is_up_to_date := reflect.DeepEqual(wantService.Labels, haveService.Labels) &&
+		reflect.DeepEqual(wantService.Spec.Selector, haveService.Spec.Selector) &&
+		reflect.DeepEqual(wantService.Spec.Ports, haveService.Spec.Ports)
+
+	if is_up_to_date {
 		logger.Info("MCP Service resource is up to date")
 		return nil
 	}
 
 	// Update the service spec to match expected spec
-	service.Spec = expectedSpec
-	if err := r.Update(ctx, service); err != nil {
+	if err := r.Update(ctx, wantService); err != nil {
 		return fmt.Errorf("failed to update MCP Service resource: %w", err)
 	}
-	logger.Info("MCP Service resource updated")
 
+	logger.Info("MCP Service resource updated")
 	return nil
 }
 
