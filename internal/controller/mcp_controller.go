@@ -18,8 +18,10 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -65,48 +67,58 @@ func (r *MCPReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // move the current state of the cluster closer to the desired state.
 func (r *MCPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
+	logger.Info("MCP reconciliation started")
 
 	cr := &helloworldv1.MCP{}
 	if err := r.Get(ctx, req.NamespacedName, cr); err != nil {
 		if errors.IsNotFound(err) {
+			logger.Info("MCP Object is not found, stop MCP reconciliation")
 			return ctrl.Result{}, nil
 		}
+
+		logger.Error(err, "Failed to get MCP Object")
 		return ctrl.Result{}, err
 	}
 
-	logger = logger.WithValues(
-		"name", cr.Name,
-		"namespace", cr.Namespace,
-	)
-
-	if err := r.handleCR(ctx, cr); err != nil {
+	if err := r.finalizerMCP(ctx, logger, cr); err != nil {
 		if errors.IsResourceExpired(err) {
-			return ctrl.Result{}, errors.NewResourceExpired("MCP Object is being deleted, stop MCP reconciliation")
+			logger.Info("MCP Object is deleted, stop MCP reconciliation")
+			return ctrl.Result{}, nil
 		}
-		logger.Error(err, "Finalizer handling failed")
+
+		logger.Error(err, "MCP Object finalizer handling failed")
 		return ctrl.Result{}, err
 	}
 
 	switch *cr.Spec.Type {
 	case helloworldv1.External:
-		return ctrl.Result{}, r.handleService(ctx, cr)
+		if err := r.handleService(ctx, logger, cr); err != nil {
+			logger.Error(err, "Failed to handle MCP Service resource (externalName)")
+			return ctrl.Result{}, err
+		}
+		logger.Info("MCP Service resource (externalName) is handled")
 	case helloworldv1.Internal:
 		fallthrough
 	default:
-		if err := r.handleDeployment(ctx, cr); err != nil {
+		if err := r.handleDeployment(ctx, logger, cr); err != nil {
+			logger.Error(err, "Failed to handle MCP Deployment resource")
 			return ctrl.Result{}, err
 		}
-		if err := r.handleService(ctx, cr); err != nil {
+		logger.Info("MCP Deployment resource is handled")
+
+		if err := r.handleService(ctx, logger, cr); err != nil {
+			logger.Error(err, "Failed to handle MCP Service resource (clusterIP)")
 			return ctrl.Result{}, err
 		}
+		logger.Info("MCP Service resource (clusterIP) is handled")
 	}
 
+	logger.Info("MCP reconciliation completed")
 	return ctrl.Result{}, nil
 }
 
-func (r *MCPReconciler) handleDeployment(ctx context.Context, cr *helloworldv1.MCP) error {
-	logger := logf.FromContext(ctx)
-	logger.Info("Handling Deployment")
+func (r *MCPReconciler) handleDeployment(ctx context.Context, logger logr.Logger, cr *helloworldv1.MCP) error {
+	logger.Info("Handling MCP Deployment resource")
 
 	var (
 		namespacedName = types.NamespacedName{
@@ -157,44 +169,40 @@ func (r *MCPReconciler) handleDeployment(ctx context.Context, cr *helloworldv1.M
 	// The MCP is being deleted
 	if !controllerutil.ContainsFinalizer(cr, mcpFinalizer) {
 		// stop reconciliation
-		logger.Info("MCP Object is being deleted, stop Deployment reconciliation")
+		logger.Info("MCP Object is being deleted, stop MCP Deployment resource reconciliation")
 		return nil
 	}
 
 	if err := r.Get(ctx, namespacedName, deployment); err != nil {
 		if !errors.IsNotFound(err) {
-			return err
+			return fmt.Errorf("failed to get MCP Deployment resource: %w", err)
 		}
 
 		if err := controllerutil.SetControllerReference(cr, deployment, r.Scheme); err != nil {
-			logger.Error(err, "Failed to set controller reference")
-			return err
+			return fmt.Errorf("failed to set controller reference: %w", err)
 		}
 		if err := r.Create(ctx, deployment); err != nil {
-			logger.Error(err, "Failed to create Deployment")
-			return err
+			return fmt.Errorf("failed to create MCP Deployment resource: %w", err)
 		}
 	}
 
 	if reflect.DeepEqual(expectedSpec, deployment.Spec) {
-		logger.Info("Deployment is up to date")
+		logger.Info("MCP Deployment resource is up to date")
 		return nil
 	}
 
 	// Update the deployment spec to match expected spec
 	deployment.Spec = expectedSpec
 	if err := r.Update(ctx, deployment); err != nil {
-		logger.Error(err, "Failed to update Deployment")
-		return err
+		return fmt.Errorf("failed to update MCP Deployment resource: %w", err)
 	}
-	logger.Info("Deployment updated")
 
+	logger.Info("MCP Deployment resource updated")
 	return nil
 }
 
-func (r *MCPReconciler) handleService(ctx context.Context, cr *helloworldv1.MCP) error {
-	logger := logf.FromContext(ctx)
-	logger.Info("Handling Service")
+func (r *MCPReconciler) handleService(ctx context.Context, logger logr.Logger, cr *helloworldv1.MCP) error {
+	logger.Info("Handling MCP Service resource")
 
 	var (
 		namespacedName = types.NamespacedName{
@@ -236,44 +244,40 @@ func (r *MCPReconciler) handleService(ctx context.Context, cr *helloworldv1.MCP)
 	// The MCP is being deleted
 	if !controllerutil.ContainsFinalizer(cr, mcpFinalizer) {
 		// stop reconciliation
-		logger.Info("MCP Object is being deleted, stop Service reconciliation")
+		logger.Info("MCP Object is being deleted, stop MCP Service resource reconciliation")
 		return nil
 	}
 
 	if err := r.Get(ctx, namespacedName, service); err != nil {
 		if !errors.IsNotFound(err) {
-			return err
+			return fmt.Errorf("failed to get MCP Service resource: %w", err)
 		}
 
 		if err := controllerutil.SetControllerReference(cr, service, r.Scheme); err != nil {
-			logger.Error(err, "Failed to set controller reference")
-			return err
+			return fmt.Errorf("failed to set controller reference: %w", err)
 		}
 		if err := r.Create(ctx, service); err != nil {
-			logger.Error(err, "Failed to create Service")
-			return err
+			return fmt.Errorf("failed to create MCP Service resource: %w", err)
 		}
 	}
 
 	if reflect.DeepEqual(expectedSpec, service.Spec) {
-		logger.Info("Service is up to date")
+		logger.Info("MCP Service resource is up to date")
 		return nil
 	}
 
 	// Update the service spec to match expected spec
 	service.Spec = expectedSpec
 	if err := r.Update(ctx, service); err != nil {
-		logger.Error(err, "Failed to update Service")
-		return err
+		return fmt.Errorf("failed to update MCP Service resource: %w", err)
 	}
-	logger.Info("Service updated")
+	logger.Info("MCP Service resource updated")
 
 	return nil
 }
 
-func (r *MCPReconciler) handleCR(ctx context.Context, cr *helloworldv1.MCP) error {
-	logger := logf.FromContext(ctx)
-	logger.Info("Handling MCP")
+func (r *MCPReconciler) finalizerMCP(ctx context.Context, logger logr.Logger, cr *helloworldv1.MCP) error {
+	logger.Info("Handling MCP Object finalizer")
 
 	// The CR is not being deleted
 	if cr.DeletionTimestamp.IsZero() {
@@ -281,9 +285,9 @@ func (r *MCPReconciler) handleCR(ctx context.Context, cr *helloworldv1.MCP) erro
 		if !controllerutil.ContainsFinalizer(cr, mcpFinalizer) {
 			controllerutil.AddFinalizer(cr, mcpFinalizer)
 			if err := r.Update(ctx, cr); err != nil {
-				return err
+				return fmt.Errorf("failed to add MCP Object finalizer: %w", err)
 			}
-			logger.Info("CR Object finalizer is added")
+			logger.Info("MCP Object finalizer is added")
 		}
 
 		return nil
@@ -292,19 +296,18 @@ func (r *MCPReconciler) handleCR(ctx context.Context, cr *helloworldv1.MCP) erro
 	// The CR is being deleted
 	if controllerutil.ContainsFinalizer(cr, mcpFinalizer) {
 		// Cleanup owned resources before removing finalizer
-		if err := r.cleanupOwnedResources(ctx, cr); err != nil {
-			logger.Error(err, "Failed to cleanup owned resources")
-			return err
+		if err := r.cleanupOwnedResources(ctx, logger, cr); err != nil {
+			return fmt.Errorf("failed to cleanup owned resources: %w", err)
 		}
 
 		// Remove the finalizer after cleanup
 		controllerutil.RemoveFinalizer(cr, mcpFinalizer)
 		if err := r.Update(ctx, cr); err != nil {
 			if !errors.IsNotFound(err) {
-				return err
+				return fmt.Errorf("failed to remove MCP Object finalizer: %w", err)
 			}
 		}
-		logger.Info("CR Object finalizer is removed")
+		logger.Info("MCP Object finalizer is removed")
 
 		return errors.NewResourceExpired("MCP Object is being deleted, stop MCP reconciliation")
 	}
@@ -312,8 +315,7 @@ func (r *MCPReconciler) handleCR(ctx context.Context, cr *helloworldv1.MCP) erro
 	return nil
 }
 
-func (r *MCPReconciler) cleanupOwnedResources(ctx context.Context, cr *helloworldv1.MCP) error {
-	logger := logf.FromContext(ctx)
+func (r *MCPReconciler) cleanupOwnedResources(ctx context.Context, logger logr.Logger, cr *helloworldv1.MCP) error {
 	logger.Info("Cleaning up owned resources")
 
 	namespacedName := types.NamespacedName{
@@ -326,7 +328,7 @@ func (r *MCPReconciler) cleanupOwnedResources(ctx context.Context, cr *helloworl
 	if err := r.Get(ctx, namespacedName, deployment); err == nil {
 		logger.Info("Deleting deployment")
 		if err := r.Delete(ctx, deployment); err != nil && !errors.IsNotFound(err) {
-			return err
+			return fmt.Errorf("failed to delete MCP Deployment resource: %w", err)
 		}
 	}
 
@@ -335,9 +337,10 @@ func (r *MCPReconciler) cleanupOwnedResources(ctx context.Context, cr *helloworl
 	if err := r.Get(ctx, namespacedName, service); err == nil {
 		logger.Info("Deleting service")
 		if err := r.Delete(ctx, service); err != nil && !errors.IsNotFound(err) {
-			return err
+			return fmt.Errorf("failed to delete MCP Service resource: %w", err)
 		}
 	}
 
+	logger.Info("Owned resources cleaned up")
 	return nil
 }
