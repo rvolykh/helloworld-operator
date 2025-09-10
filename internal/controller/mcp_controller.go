@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -39,12 +40,17 @@ import (
 
 const (
 	mcpFinalizer = "mcp.helloworld.rvolykh.github.com/finalizer"
+
+	eventReasonCreating = "Creating"
+	eventReasonUpdating = "Updating"
+	eventReasonDeleting = "Deleting"
 )
 
 // MCPReconciler reconciles a MCP object
 type MCPReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=helloworld.rvolykh.github.com,resources=mcps,verbs=get;list;watch;create;update;patch;delete
@@ -52,6 +58,7 @@ type MCPReconciler struct {
 // +kubebuilder:rbac:groups=helloworld.rvolykh.github.com,resources=mcps/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -181,6 +188,8 @@ func (r *MCPReconciler) handleDeployment(ctx context.Context, logger logr.Logger
 		}
 
 		logger.Info("MCP Deployment resource created")
+		r.Recorder.Eventf(cr, corev1.EventTypeNormal, eventReasonCreating,
+			"MCP Deployment resource %s is created in namespace %s", wantDeployment.Name, wantDeployment.Namespace)
 		return nil
 	}
 
@@ -204,6 +213,8 @@ func (r *MCPReconciler) handleDeployment(ctx context.Context, logger logr.Logger
 	}
 
 	logger.Info("MCP Deployment resource updated")
+	r.Recorder.Eventf(cr, corev1.EventTypeNormal, eventReasonUpdating,
+		"MCP Deployment resource %s is updated in namespace %s", wantDeployment.Name, wantDeployment.Namespace)
 	return nil
 }
 
@@ -266,6 +277,8 @@ func (r *MCPReconciler) handleService(ctx context.Context, logger logr.Logger, c
 		}
 
 		logger.Info("MCP Service resource created")
+		r.Recorder.Eventf(cr, corev1.EventTypeNormal, eventReasonCreating,
+			"MCP Service resource %s is created in namespace %s", wantService.Name, wantService.Namespace)
 		return nil
 	}
 
@@ -284,6 +297,8 @@ func (r *MCPReconciler) handleService(ctx context.Context, logger logr.Logger, c
 	}
 
 	logger.Info("MCP Service resource updated")
+	r.Recorder.Eventf(cr, corev1.EventTypeNormal, eventReasonUpdating,
+		"MCP Service resource %s is updated in namespace %s", wantService.Name, wantService.Namespace)
 	return nil
 }
 
@@ -298,7 +313,10 @@ func (r *MCPReconciler) finalizerMCP(ctx context.Context, logger logr.Logger, cr
 			if err := r.Update(ctx, cr); err != nil {
 				return fmt.Errorf("failed to add MCP Object finalizer: %w", err)
 			}
+
 			logger.Info("MCP Object finalizer is added")
+			r.Recorder.Eventf(cr, corev1.EventTypeNormal, eventReasonCreating,
+				"MCP Object finalizer is added to %s in namespace %s", cr.Name, cr.Namespace)
 		}
 
 		return nil
@@ -310,6 +328,9 @@ func (r *MCPReconciler) finalizerMCP(ctx context.Context, logger logr.Logger, cr
 		if err := r.cleanupOwnedResources(ctx, logger, cr); err != nil {
 			return fmt.Errorf("failed to cleanup owned resources: %w", err)
 		}
+
+		r.Recorder.Eventf(cr, corev1.EventTypeWarning, eventReasonDeleting,
+			"MCP Object %s is being deleted from the namespace %s", cr.Name, cr.Namespace)
 
 		// Remove the finalizer after cleanup
 		controllerutil.RemoveFinalizer(cr, mcpFinalizer)
@@ -338,6 +359,10 @@ func (r *MCPReconciler) cleanupOwnedResources(ctx context.Context, logger logr.L
 	deployment := &appsv1.Deployment{}
 	if err := r.Get(ctx, namespacedName, deployment); err == nil {
 		logger.Info("Deleting deployment")
+
+		r.Recorder.Eventf(cr, corev1.EventTypeWarning, eventReasonDeleting,
+			"MCP Deployment resource %s is being deleted from the namespace %s", cr.Name, cr.Namespace)
+
 		if err := r.Delete(ctx, deployment); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete MCP Deployment resource: %w", err)
 		}
@@ -347,6 +372,10 @@ func (r *MCPReconciler) cleanupOwnedResources(ctx context.Context, logger logr.L
 	service := &corev1.Service{}
 	if err := r.Get(ctx, namespacedName, service); err == nil {
 		logger.Info("Deleting service")
+
+		r.Recorder.Eventf(cr, corev1.EventTypeWarning, eventReasonDeleting,
+			"MCP Service resource %s is being deleted from the namespace %s", cr.Name, cr.Namespace)
+
 		if err := r.Delete(ctx, service); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete MCP Service resource: %w", err)
 		}

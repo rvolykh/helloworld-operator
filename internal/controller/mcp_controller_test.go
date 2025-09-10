@@ -29,7 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	helloworldv1 "github.com/rvolykh/helloworld-operator/api/v1"
@@ -45,8 +45,9 @@ var _ = Describe("MCP Controller", func() {
 	BeforeEach(func() {
 		ctx = context.Background()
 		controllerReconciler = &MCPReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
+			Client:   k8sClient,
+			Scheme:   k8sClient.Scheme(),
+			Recorder: record.NewFakeRecorder(100),
 		}
 		testCounter++
 	})
