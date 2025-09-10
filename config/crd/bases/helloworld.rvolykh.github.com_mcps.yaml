@@ -140,18 +140,10 @@ spec:
                 x-kubernetes-list-type: map
               info:
                 properties:
-                  podName:
-                    title: Name of the pod where the MCP is deployed
-                    type: string
-                  secretName:
-                    title: Name of the secret with the API key for MCP
-                    type: string
                   url:
                     title: URL of the deployed MCP
                     type: string
                 required:
-                - podName
-                - secretName
                 - url
                 title: Info about the deployed MCP
                 type: object

@@ -59,12 +59,6 @@ type MCPSpec struct {
 type MCPInfo struct {
 	// +kubebuilder:title:=URL of the deployed MCP
 	URL string `json:"url"`
-
-	// +kubebuilder:title:=Name of the pod where the MCP is deployed
-	Pod string `json:"podName"`
-
-	// +kubebuilder:title:=Name of the secret with the API key for MCP
-	Secret string `json:"secretName"`
 }
 
 // MCPStatus defines the observed state of MCP.

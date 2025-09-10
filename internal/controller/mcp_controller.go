@@ -87,7 +87,7 @@ func (r *MCPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if err := r.finalizerMCP(ctx, logger, cr); err != nil {
+	if err := r.handleFinalizer(ctx, logger, cr); err != nil {
 		if errors.IsResourceExpired(err) {
 			logger.Info("MCP Object is deleted, stop MCP reconciliation")
 			return ctrl.Result{}, nil
@@ -115,6 +115,11 @@ func (r *MCPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			logger.Error(err, "Failed to handle MCP Service resource (clusterIP)")
 			return ctrl.Result{}, err
 		}
+	}
+
+	if err := r.handleStatus(ctx, logger, cr); err != nil {
+		logger.Error(err, "unable to update MCP status")
+		return ctrl.Result{}, err
 	}
 
 	logger.Info("MCP reconciliation completed")
@@ -302,7 +307,7 @@ func (r *MCPReconciler) handleService(ctx context.Context, logger logr.Logger, c
 	return nil
 }
 
-func (r *MCPReconciler) finalizerMCP(ctx context.Context, logger logr.Logger, cr *helloworldv1.MCP) error {
+func (r *MCPReconciler) handleFinalizer(ctx context.Context, logger logr.Logger, cr *helloworldv1.MCP) error {
 	logger.Info("Handling MCP Object finalizer")
 
 	// The CR is not being deleted
@@ -382,5 +387,31 @@ func (r *MCPReconciler) cleanupOwnedResources(ctx context.Context, logger logr.L
 	}
 
 	logger.Info("Owned resources cleaned up")
+	return nil
+}
+
+func (r *MCPReconciler) handleStatus(ctx context.Context, logger logr.Logger, cr *helloworldv1.MCP) error {
+	logger.Info("Handling MCP Object status")
+
+	var (
+		haveInfo = cr.Status.Info
+		wantInfo = &helloworldv1.MCPInfo{
+			URL: fmt.Sprintf("http://%s:8080", cr.Name),
+		}
+	)
+
+	is_up_to_date := reflect.DeepEqual(wantInfo, haveInfo)
+
+	if is_up_to_date {
+		logger.Info("MCP Object status is up to date")
+		return nil
+	}
+
+	cr.Status.Info = wantInfo
+	if err := r.Status().Update(ctx, cr); err != nil {
+		return fmt.Errorf("failed to update MCP Object status: %w", err)
+	}
+
+	logger.Info("MCP Object status updated")
 	return nil
 }
