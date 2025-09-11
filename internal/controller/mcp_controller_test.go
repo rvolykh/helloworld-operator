@@ -372,4 +372,375 @@ var _ = Describe("MCP Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Context("When testing status conditions", func() {
+		const testImage = "test/mcp-image:latest"
+
+		var (
+			resourceName       string
+			typeNamespacedName types.NamespacedName
+			mcp                *helloworldv1.MCP
+		)
+
+		BeforeEach(func() {
+			resourceName = fmt.Sprintf("test-status-mcp-%d", testCounter)
+			typeNamespacedName = types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}
+
+			// Create MCP resource with internal type
+			mcpType := helloworldv1.Internal
+			mcp = &helloworldv1.MCP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: helloworldv1.MCPSpec{
+					Type: &mcpType,
+					Internal: &helloworldv1.InternalMCPSpec{
+						Image: testImage,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, mcp)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			// Clean up resources
+			resource := &helloworldv1.MCP{}
+			if err := k8sClient.Get(ctx, typeNamespacedName, resource); err == nil {
+				// Remove finalizer first to allow deletion
+				resource.Finalizers = []string{}
+				Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+				Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+				// Wait for deletion to complete
+				Eventually(func() bool {
+					err := k8sClient.Get(ctx, typeNamespacedName, resource)
+					return errors.IsNotFound(err)
+				}, time.Second*15, time.Millisecond*250).Should(BeTrue())
+			}
+
+			// Clean up any leftover deployment
+			deployment := &appsv1.Deployment{}
+			if err := k8sClient.Get(ctx, typeNamespacedName, deployment); err == nil {
+				Expect(k8sClient.Delete(ctx, deployment)).To(Succeed())
+			}
+
+			// Clean up any leftover service
+			service := &corev1.Service{}
+			if err := k8sClient.Get(ctx, typeNamespacedName, service); err == nil {
+				Expect(k8sClient.Delete(ctx, service)).To(Succeed())
+			}
+		})
+
+		It("should set Progressing condition when deployment is being created", func() {
+			By("Reconciling the created resource")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Checking that Progressing condition is set")
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, typeNamespacedName, mcp); err != nil {
+					return false
+				}
+
+				// Find the progressing condition
+				for _, condition := range mcp.Status.Conditions {
+					if condition.Type == "Progressing" && condition.Status == metav1.ConditionTrue {
+						return condition.Reason == "DeploymentStatus" &&
+							condition.Message != ""
+					}
+				}
+				return false
+			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+
+			By("Checking that MCPInfo URL is set correctly")
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, typeNamespacedName, mcp); err != nil {
+					return false
+				}
+
+				expectedURL := fmt.Sprintf("http://%s:8080", resourceName)
+				return mcp.Status.Info != nil && mcp.Status.Info.URL == expectedURL
+			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+		})
+
+		It("should transition from Progressing to Available condition", func() {
+			By("Initial reconciliation")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying initial Progressing condition")
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, typeNamespacedName, mcp); err != nil {
+					return false
+				}
+
+				for _, condition := range mcp.Status.Conditions {
+					if condition.Type == "Progressing" && condition.Status == metav1.ConditionTrue {
+						return true
+					}
+				}
+				return false
+			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+
+			By("Simulating deployment becoming available")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, typeNamespacedName, deployment)
+			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+
+			// Update deployment status to simulate it becoming available
+			deployment.Status.Conditions = []appsv1.DeploymentCondition{
+				{
+					Type:               appsv1.DeploymentAvailable,
+					Status:             corev1.ConditionTrue,
+					LastUpdateTime:     metav1.Now(),
+					LastTransitionTime: metav1.Now(),
+					Reason:             "MinimumReplicasAvailable",
+					Message:            "Deployment has minimum availability",
+				},
+			}
+			deployment.Status.Replicas = 1
+			deployment.Status.ReadyReplicas = 1
+			deployment.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, deployment)).To(Succeed())
+
+			By("Reconciling again to update status")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Available condition is set")
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, typeNamespacedName, mcp); err != nil {
+					return false
+				}
+
+				for _, condition := range mcp.Status.Conditions {
+					if condition.Type == "Available" &&
+						condition.Status == metav1.ConditionTrue &&
+						condition.Reason == "DeploymentStatus" &&
+						condition.Message == "MCP Deployment is available and ready" {
+						return true
+					}
+				}
+				return false
+			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+		})
+
+		It("should set Degraded condition when deployment fails", func() {
+			By("Initial reconciliation")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Simulating deployment failure")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, typeNamespacedName, deployment)
+			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+
+			// Update deployment status to simulate failure
+			deployment.Status.Conditions = []appsv1.DeploymentCondition{
+				{
+					Type:               appsv1.DeploymentReplicaFailure,
+					Status:             corev1.ConditionTrue,
+					LastUpdateTime:     metav1.Now(),
+					LastTransitionTime: metav1.Now(),
+					Reason:             "FailedCreate",
+					Message:            "Failed to create replica set",
+				},
+			}
+			deployment.Status.Replicas = 1
+			deployment.Status.ReadyReplicas = 0
+			deployment.Status.AvailableReplicas = 0
+			Expect(k8sClient.Status().Update(ctx, deployment)).To(Succeed())
+
+			By("Reconciling again to update status")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Degraded condition is set")
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, typeNamespacedName, mcp); err != nil {
+					return false
+				}
+
+				for _, condition := range mcp.Status.Conditions {
+					if condition.Type == "Degraded" &&
+						condition.Status == metav1.ConditionTrue &&
+						condition.Reason == "DeploymentStatus" {
+						return true
+					}
+				}
+				return false
+			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+		})
+
+		It("should handle multiple condition updates correctly", func() {
+			By("Initial reconciliation")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying only one condition is True at a time")
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, typeNamespacedName, mcp); err != nil {
+					return false
+				}
+
+				trueConditions := 0
+				for _, condition := range mcp.Status.Conditions {
+					if condition.Status == metav1.ConditionTrue {
+						trueConditions++
+					}
+				}
+				return trueConditions == 1
+			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+
+			By("Simulating deployment progress")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, typeNamespacedName, deployment)
+			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+
+			deployment.Status.Conditions = []appsv1.DeploymentCondition{
+				{
+					Type:               appsv1.DeploymentProgressing,
+					Status:             corev1.ConditionTrue,
+					LastUpdateTime:     metav1.Now(),
+					LastTransitionTime: metav1.Now(),
+					Reason:             "NewReplicaSetCreated",
+					Message:            "Created new replica set",
+				},
+			}
+			deployment.Status.Replicas = 1
+			Expect(k8sClient.Status().Update(ctx, deployment)).To(Succeed())
+
+			By("Reconciling to update status")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Progressing condition with updated message")
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, typeNamespacedName, mcp); err != nil {
+					return false
+				}
+
+				for _, condition := range mcp.Status.Conditions {
+					if condition.Type == "Progressing" &&
+						condition.Status == metav1.ConditionTrue &&
+						condition.Reason == "DeploymentStatus" &&
+						condition.Message == "MCP Deployment is progressing: Created new replica set" {
+						return true
+					}
+				}
+				return false
+			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+		})
+	})
+
+	Context("When testing External MCP status", func() {
+		const testURL = "external-mcp.example.com"
+
+		var (
+			resourceName       string
+			typeNamespacedName types.NamespacedName
+			mcp                *helloworldv1.MCP
+		)
+
+		BeforeEach(func() {
+			resourceName = fmt.Sprintf("test-external-status-mcp-%d", testCounter)
+			typeNamespacedName = types.NamespacedName{
+				Name:      resourceName,
+				Namespace: "default",
+			}
+
+			// Create MCP resource with external type
+			mcpType := helloworldv1.External
+			mcp = &helloworldv1.MCP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: "default",
+				},
+				Spec: helloworldv1.MCPSpec{
+					Type: &mcpType,
+					External: &helloworldv1.ExternalMCPSpec{
+						URL: testURL,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, mcp)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			// Clean up resources
+			resource := &helloworldv1.MCP{}
+			if err := k8sClient.Get(ctx, typeNamespacedName, resource); err == nil {
+				// Remove finalizer first to allow deletion
+				resource.Finalizers = []string{}
+				Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+				Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+				// Wait for deletion to complete
+				Eventually(func() bool {
+					err := k8sClient.Get(ctx, typeNamespacedName, resource)
+					return errors.IsNotFound(err)
+				}, time.Second*15, time.Millisecond*250).Should(BeTrue())
+			}
+
+			// Clean up any leftover service
+			service := &corev1.Service{}
+			if err := k8sClient.Get(ctx, typeNamespacedName, service); err == nil {
+				Expect(k8sClient.Delete(ctx, service)).To(Succeed())
+			}
+		})
+
+		It("should set MCPInfo URL for external MCP without deployment conditions", func() {
+			By("Reconciling the external MCP")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Checking that MCPInfo URL is set correctly")
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, typeNamespacedName, mcp); err != nil {
+					return false
+				}
+
+				expectedURL := fmt.Sprintf("http://%s:8080", resourceName)
+				return mcp.Status.Info != nil && mcp.Status.Info.URL == expectedURL
+			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+
+			By("Verifying no deployment-related conditions are set for external MCP")
+			Consistently(func() bool {
+				if err := k8sClient.Get(ctx, typeNamespacedName, mcp); err != nil {
+					return false
+				}
+
+				// For external MCPs, we shouldn't have deployment-related conditions
+				for _, condition := range mcp.Status.Conditions {
+					if condition.Type == "Available" || condition.Type == "Progressing" || condition.Type == "Degraded" {
+						return false
+					}
+				}
+				return true
+			}, time.Second*3, time.Millisecond*250).Should(BeTrue())
+		})
+	})
 })
