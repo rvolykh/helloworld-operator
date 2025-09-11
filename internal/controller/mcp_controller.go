@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -198,7 +199,7 @@ func (r *MCPReconciler) handleDeployment(ctx context.Context, logger logr.Logger
 		return nil
 	}
 
-	is_up_to_date := reflect.DeepEqual(wantDeployment.Labels, haveDeployment.Labels) &&
+	isUpToDate := reflect.DeepEqual(wantDeployment.Labels, haveDeployment.Labels) &&
 		*wantDeployment.Spec.Replicas == *haveDeployment.Spec.Replicas &&
 		reflect.DeepEqual(wantDeployment.Spec.Selector, haveDeployment.Spec.Selector) &&
 		reflect.DeepEqual(wantDeployment.Spec.Template.Labels, haveDeployment.Spec.Template.Labels) &&
@@ -207,8 +208,8 @@ func (r *MCPReconciler) handleDeployment(ctx context.Context, logger logr.Logger
 		wantDeployment.Spec.Template.Spec.Containers[0].Image == haveDeployment.Spec.Template.Spec.Containers[0].Image &&
 		reflect.DeepEqual(wantDeployment.Spec.Template.Spec.Containers[0].Ports, haveDeployment.Spec.Template.Spec.Containers[0].Ports)
 
-	if is_up_to_date {
-		logger.Info("MCP Deployment resource is up to date")
+	if isUpToDate {
+		logger.Info("MCP Deployment resource is up-to-date")
 		return nil
 	}
 
@@ -287,12 +288,12 @@ func (r *MCPReconciler) handleService(ctx context.Context, logger logr.Logger, c
 		return nil
 	}
 
-	is_up_to_date := reflect.DeepEqual(wantService.Labels, haveService.Labels) &&
+	isUpToDate := reflect.DeepEqual(wantService.Labels, haveService.Labels) &&
 		reflect.DeepEqual(wantService.Spec.Selector, haveService.Spec.Selector) &&
 		reflect.DeepEqual(wantService.Spec.Ports, haveService.Spec.Ports)
 
-	if is_up_to_date {
-		logger.Info("MCP Service resource is up to date")
+	if isUpToDate {
+		logger.Info("MCP Service resource is up-to-date")
 		return nil
 	}
 
@@ -394,24 +395,105 @@ func (r *MCPReconciler) handleStatus(ctx context.Context, logger logr.Logger, cr
 	logger.Info("Handling MCP Object status")
 
 	var (
-		haveInfo = cr.Status.Info
+		namespacedName = types.NamespacedName{
+			Name:      cr.Name,
+			Namespace: cr.Namespace,
+		}
+		deployment = &appsv1.Deployment{}
+
 		wantInfo = &helloworldv1.MCPInfo{
 			URL: fmt.Sprintf("http://%s:8080", cr.Name),
 		}
+		wantCondition metav1.Condition
 	)
 
-	is_up_to_date := reflect.DeepEqual(wantInfo, haveInfo)
+	isUpToDate := cr.Status.Info != nil && cr.Status.Info.URL == wantInfo.URL
+	if cr.Spec.Type != nil && *cr.Spec.Type == helloworldv1.Internal {
+		err := r.Get(ctx, namespacedName, deployment)
+		if err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to fetch MCP Deployment resource: %w", err)
+		}
 
-	if is_up_to_date {
-		logger.Info("MCP Object status is up to date")
+		wantCondition = r.prepareMCPCondition(deployment)
+		haveCondition := meta.FindStatusCondition(cr.Status.Conditions, wantCondition.Type)
+
+		isUpToDate = isUpToDate && haveCondition != nil &&
+			haveCondition.Status == wantCondition.Status &&
+			haveCondition.Reason == wantCondition.Reason &&
+			haveCondition.Message == wantCondition.Message
+	}
+
+	if isUpToDate {
+		logger.Info("MCP Object status is up-to-date")
 		return nil
 	}
 
+	if wantCondition.Type != "" {
+		for i, condition := range cr.Status.Conditions {
+			if condition.Type != wantCondition.Type {
+				cr.Status.Conditions[i].Status = metav1.ConditionFalse
+			}
+		}
+		meta.SetStatusCondition(&cr.Status.Conditions, wantCondition)
+	}
 	cr.Status.Info = wantInfo
+
 	if err := r.Status().Update(ctx, cr); err != nil {
 		return fmt.Errorf("failed to update MCP Object status: %w", err)
 	}
 
-	logger.Info("MCP Object status updated")
+	logger.Info("MCP Object status updated", "url", wantInfo.URL, "condition", wantCondition.Type)
 	return nil
+}
+
+func (r *MCPReconciler) prepareMCPCondition(deployment *appsv1.Deployment) metav1.Condition {
+	if deployment == nil {
+		return metav1.Condition{
+			Type:    "Progressing",
+			Status:  metav1.ConditionTrue,
+			Reason:  "DeploymentStatus",
+			Message: "Deployment resource is not found, waiting for deployment creation",
+		}
+	}
+
+	var latestDeploymentCondition *appsv1.DeploymentCondition
+	for i := range deployment.Status.Conditions {
+		condition := &deployment.Status.Conditions[i]
+		if latestDeploymentCondition == nil || condition.LastUpdateTime.After(latestDeploymentCondition.LastUpdateTime.Time) {
+			latestDeploymentCondition = condition
+		}
+	}
+
+	if latestDeploymentCondition == nil {
+		return metav1.Condition{
+			Type:    "Progressing",
+			Status:  metav1.ConditionTrue,
+			Reason:  "DeploymentStatus",
+			Message: "Deployment is created but no status conditions available yet",
+		}
+	}
+
+	switch latestDeploymentCondition.Type {
+	case appsv1.DeploymentAvailable:
+		return metav1.Condition{
+			Type:    "Available",
+			Status:  metav1.ConditionTrue,
+			Reason:  "DeploymentStatus",
+			Message: "MCP Deployment is available and ready",
+		}
+	case appsv1.DeploymentProgressing:
+		return metav1.Condition{
+			Type:    "Progressing",
+			Status:  metav1.ConditionTrue,
+			Reason:  "DeploymentStatus",
+			Message: fmt.Sprintf("MCP Deployment is progressing: %s", latestDeploymentCondition.Message),
+		}
+	}
+
+	return metav1.Condition{
+		Type:    "Degraded",
+		Status:  metav1.ConditionTrue,
+		Reason:  "DeploymentStatus",
+		Message: fmt.Sprintf("MCP Deployment has an issue: %s", latestDeploymentCondition.Reason),
+	}
 }
