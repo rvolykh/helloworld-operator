@@ -27,6 +27,18 @@ const (
 	External DeplomentMCPType = "external"
 )
 
+const (
+	// MCPConditionTypeAvailable indicates that the MCP is fully functional
+	MCPConditionTypeAvailable = "Available"
+	// MCPConditionTypeProgressing indicates that the MCP is being created or updated
+	MCPConditionTypeProgressing = "Progressing"
+	// MCPConditionTypeDegraded indicates that the MCP failed to reach or maintain its desired state
+	MCPConditionTypeDegraded = "Degraded"
+
+	// MCPConditionReasonDeploymentStatus indicates current status of owned deployment resource
+	MCPConditionReasonDeploymentStatus = "DeploymentStatus"
+)
+
 type InternalMCPSpec struct {
 	// +kubebuilder:title:=Docker image of the MCP to deploy
 	// +kubebuilder:validation:Required

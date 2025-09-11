@@ -450,8 +450,8 @@ var _ = Describe("MCP Controller", func() {
 
 				// Find the progressing condition
 				for _, condition := range mcp.Status.Conditions {
-					if condition.Type == "Progressing" && condition.Status == metav1.ConditionTrue {
-						return condition.Reason == "DeploymentStatus" &&
+					if condition.Type == helloworldv1.MCPConditionTypeProgressing && condition.Status == metav1.ConditionTrue {
+						return condition.Reason == helloworldv1.MCPConditionReasonDeploymentStatus &&
 							condition.Message != ""
 					}
 				}
@@ -483,7 +483,7 @@ var _ = Describe("MCP Controller", func() {
 				}
 
 				for _, condition := range mcp.Status.Conditions {
-					if condition.Type == "Progressing" && condition.Status == metav1.ConditionTrue {
+					if condition.Type == helloworldv1.MCPConditionTypeProgressing && condition.Status == metav1.ConditionTrue {
 						return true
 					}
 				}
@@ -525,9 +525,9 @@ var _ = Describe("MCP Controller", func() {
 				}
 
 				for _, condition := range mcp.Status.Conditions {
-					if condition.Type == "Available" &&
+					if condition.Type == helloworldv1.MCPConditionTypeAvailable &&
 						condition.Status == metav1.ConditionTrue &&
-						condition.Reason == "DeploymentStatus" &&
+						condition.Reason == helloworldv1.MCPConditionReasonDeploymentStatus &&
 						condition.Message == "MCP Deployment is available and ready" {
 						return true
 					}
@@ -578,9 +578,9 @@ var _ = Describe("MCP Controller", func() {
 				}
 
 				for _, condition := range mcp.Status.Conditions {
-					if condition.Type == "Degraded" &&
+					if condition.Type == helloworldv1.MCPConditionTypeDegraded &&
 						condition.Status == metav1.ConditionTrue &&
-						condition.Reason == "DeploymentStatus" {
+						condition.Reason == helloworldv1.MCPConditionReasonDeploymentStatus {
 						return true
 					}
 				}
@@ -642,9 +642,9 @@ var _ = Describe("MCP Controller", func() {
 				}
 
 				for _, condition := range mcp.Status.Conditions {
-					if condition.Type == "Progressing" &&
+					if condition.Type == helloworldv1.MCPConditionTypeProgressing &&
 						condition.Status == metav1.ConditionTrue &&
-						condition.Reason == "DeploymentStatus" &&
+						condition.Reason == helloworldv1.MCPConditionReasonDeploymentStatus &&
 						condition.Message == "MCP Deployment is progressing: Created new replica set" {
 						return true
 					}
@@ -735,7 +735,7 @@ var _ = Describe("MCP Controller", func() {
 
 				// For external MCPs, we shouldn't have deployment-related conditions
 				for _, condition := range mcp.Status.Conditions {
-					if condition.Type == "Available" || condition.Type == "Progressing" || condition.Type == "Degraded" {
+					if condition.Type == helloworldv1.MCPConditionTypeAvailable || condition.Type == helloworldv1.MCPConditionTypeProgressing || condition.Type == helloworldv1.MCPConditionTypeDegraded {
 						return false
 					}
 				}

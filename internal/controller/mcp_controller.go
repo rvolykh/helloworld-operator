@@ -449,9 +449,9 @@ func (r *MCPReconciler) handleStatus(ctx context.Context, logger logr.Logger, cr
 func (r *MCPReconciler) prepareMCPCondition(deployment *appsv1.Deployment) metav1.Condition {
 	if deployment == nil {
 		return metav1.Condition{
-			Type:    "Progressing",
+			Type:    helloworldv1.MCPConditionTypeProgressing,
 			Status:  metav1.ConditionTrue,
-			Reason:  "DeploymentStatus",
+			Reason:  helloworldv1.MCPConditionReasonDeploymentStatus,
 			Message: "Deployment resource is not found, waiting for deployment creation",
 		}
 	}
@@ -466,9 +466,9 @@ func (r *MCPReconciler) prepareMCPCondition(deployment *appsv1.Deployment) metav
 
 	if latestDeploymentCondition == nil {
 		return metav1.Condition{
-			Type:    "Progressing",
+			Type:    helloworldv1.MCPConditionTypeProgressing,
 			Status:  metav1.ConditionTrue,
-			Reason:  "DeploymentStatus",
+			Reason:  helloworldv1.MCPConditionReasonDeploymentStatus,
 			Message: "Deployment is created but no status conditions available yet",
 		}
 	}
@@ -476,24 +476,24 @@ func (r *MCPReconciler) prepareMCPCondition(deployment *appsv1.Deployment) metav
 	switch latestDeploymentCondition.Type {
 	case appsv1.DeploymentAvailable:
 		return metav1.Condition{
-			Type:    "Available",
+			Type:    helloworldv1.MCPConditionTypeAvailable,
 			Status:  metav1.ConditionTrue,
-			Reason:  "DeploymentStatus",
+			Reason:  helloworldv1.MCPConditionReasonDeploymentStatus,
 			Message: "MCP Deployment is available and ready",
 		}
 	case appsv1.DeploymentProgressing:
 		return metav1.Condition{
-			Type:    "Progressing",
+			Type:    helloworldv1.MCPConditionTypeProgressing,
 			Status:  metav1.ConditionTrue,
-			Reason:  "DeploymentStatus",
+			Reason:  helloworldv1.MCPConditionReasonDeploymentStatus,
 			Message: fmt.Sprintf("MCP Deployment is progressing: %s", latestDeploymentCondition.Message),
 		}
 	}
 
 	return metav1.Condition{
-		Type:    "Degraded",
+		Type:    helloworldv1.MCPConditionTypeDegraded,
 		Status:  metav1.ConditionTrue,
-		Reason:  "DeploymentStatus",
+		Reason:  helloworldv1.MCPConditionReasonDeploymentStatus,
 		Message: fmt.Sprintf("MCP Deployment has an issue: %s", latestDeploymentCondition.Reason),
 	}
 }
